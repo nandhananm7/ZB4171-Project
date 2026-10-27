@@ -1,0 +1,13 @@
+# First MVP: same input sample, two preprocessing strategies.
+reads:
+  r1: data/subset/ecoli_R1.fastq.gz
+  r2: data/subset/ecoli_R2.fastq.gz
+threads: 4
+memory_gb: 8
+
+# Low-coverage benchmark: target nominal coverage levels.
+# The genome length is used only for constructing the benchmark, NOT for LLM input.
+low_coverage:
+  targets_x: [8, 15, 30]
+  genome_size_bp: 4641652
+  seed: 42

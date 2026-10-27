@@ -1,0 +1,6 @@
+# First MVP: same input sample, two preprocessing strategies.
+reads:
+  r1: data/subset/ecoli_R1.fastq.gz
+  r2: data/subset/ecoli_R2.fastq.gz
+threads: 4
+memory_gb: 8

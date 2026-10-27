@@ -1,0 +1,14 @@
+name: agora-mvp
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.11
+  - snakemake>=9,<10
+  - spades
+  - fastp
+  - quast
+  - seqtk
+  - sra-tools
+  - pigz
