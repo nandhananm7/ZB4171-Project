@@ -119,7 +119,7 @@ def build_decision(profile: dict, prediction: ModelDecision, model: str) -> dict
     payload = json.dumps(profile, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return {
         "decision_schema_version": "0.2",
-        "provider": "openai",
+        "provider": "soclaas",
         "model": model,
         "profile_sha256": hashlib.sha256(payload).hexdigest(),
         "diagnosis": prediction.diagnosis,
@@ -137,26 +137,25 @@ def build_decision(profile: dict, prediction: ModelDecision, model: str) -> dict
     }
 
 
-def get_prediction(profile: dict, model: str, client) -> ModelDecision:
+def get_prediction(profile: dict, model: str, client=None) -> ModelDecision:
+    from soclaas_client import chat_json
     safe = safe_profile(profile)
-    response = client.responses.parse(
+    answer = chat_json(
         model=model,
-        input=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT + "\nReturn ONLY a JSON object with keys: diagnosis, severity, confidence, evidence, reasoning, action, action_reasoning, limitations. No markdown."},
             {"role": "user", "content": json.dumps(safe, separators=(",", ":"))},
         ],
-        text_format=ModelDecision,
+        client=client,
     )
-    if response.output_parsed is None:
-        raise RuntimeError("Model returned no structured decision (possibly refused or incomplete)")
-    return ModelDecision.model_validate(response.output_parsed)
+    return ModelDecision.model_validate(answer)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--model", default="gpt-5-mini")
+    parser.add_argument("--model", default=os.getenv("SOCLAAS_MODEL"))
     parser.add_argument("--validate-only", action="store_true", help="Check profile, no API call or output")
     args = parser.parse_args()
 
@@ -166,14 +165,11 @@ def main():
     if args.validate_only:
         print("PASS: profile schema valid; restricted labels and reference metrics absent.")
         return
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("Set OPENAI_API_KEY in this Ubuntu terminal (do not paste it into chat or code).")
-
-    # Keep optional dependency import behind --validate-only to allow local checks
-    # without installing/opening a paid API connection.
-    from openai import OpenAI
-    client = OpenAI(timeout=60, max_retries=1)
-    prediction = get_prediction(profile, args.model, client)
+    if not args.model:
+        raise SystemExit("Choose --model from `python scripts/soclaas_check.py` or set SOCLAAS_MODEL")
+    if not os.environ.get("SOCLAAS_API_KEY"):
+        raise SystemExit("Set SOCLAAS_API_KEY in this Ubuntu terminal (do not paste it into chat).")
+    prediction = get_prediction(profile, args.model)
     decision = build_decision(profile, prediction, args.model)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(decision, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

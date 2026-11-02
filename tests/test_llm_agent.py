@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "llm_agent.py"
+sys.path.insert(0, str(MODULE_PATH.parent))
 spec = importlib.util.spec_from_file_location("llm_agent", MODULE_PATH)
 agent = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = agent
@@ -59,17 +60,17 @@ class LLMTests(unittest.TestCase):
         decision = agent.ModelDecision(diagnosis="suspected_low_coverage",severity="moderate", confidence=.75,
                                        evidence=["evidence"],reasoning="reasoning",action="no_change",
                                        action_reasoning="no evidence for repair",limitations=[])
-        class DummyResponses:
-            def parse(self, **kwargs):
+        class DummyCompletions:
+            def create(self, **kwargs):
                 seen.update(kwargs)
-                return SimpleNamespace(output_parsed=decision)
-        client = SimpleNamespace(responses=DummyResponses())
-        agent.get_prediction(PROFILE,"gpt-5-mini",client)
-        payload = seen["input"][1]["content"]
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    finish_reason="stop", message=SimpleNamespace(content=decision.model_dump_json()))])
+        client = SimpleNamespace(chat=SimpleNamespace(completions=DummyCompletions()))
+        agent.get_prediction(PROFILE,"sample-chat-model",client)
+        payload = seen["messages"][1]["content"]
         self.assertIn("coverage_estimate",payload)
         self.assertNotIn("benchmark_metadata",payload)
         self.assertNotIn("results/agent_profiles/8x",payload)
-        self.assertEqual(seen["text_format"],agent.ModelDecision)
 
 if __name__ == "__main__":
     unittest.main()

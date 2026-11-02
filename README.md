@@ -1,93 +1,175 @@
-# AGORA — Milestone 1–2 Starter
+# AGORA: Controlled multi-problem repair extension
 
-This **starter** performs two assemblies of the same paired-end bacterial-read sample:
+This patch is an **add-on** to the AGORA project already built (Snakemake, fastp,
+SPAdes, QUAST, and `scripts/build_agent_profile.py`). It does **not** modify
+or delete any prior low-coverage experiment or assembly.
 
-- `raw`: SPAdes with no external fastp preprocessing.
-- `trimmed`: fastp default-style trimming then SPAdes.
+## Scientific scope
 
-Both assemblies are evaluated with **reference-free** QUAST. The comparison is written to `results/summary.json`.
+- Four deterministic *paired* data variants from the same preprocessed E. coli
+  FASTQs: `clean`, `adapter`, `quality`, `combined`.
+- The synthetic adapter artifact replaces the 3' tail with a standard Illumina
+  adapter prefix on selected reads. The error artifact reduces tail quality
+  to Q10 and introduces random substitutions with probability 0.10 for
+  selected reads. These are **simplified synthetic artifacts**, not a
+  physically calibrated Illumina error model.
+- Reference-free measurements (including a standard adapter motif near the read
+  end, tail quality, N50, contig count, and *nominal* depth) are the **only**
+  observations supplied to either policy.
+- Both agent types select from the **same action whitelist** and rerun from
+  the exact same original corrupted FASTQs: `fastp_default`,
+  `explicit_adapter`, `quality_trim`, `adapter_quality`, or `stop`.
+- The controller executes a fixed number of attempts and uses a **predefined,
+  heuristic reference-free safety check** to decide whether a trial is
+  preferable to the unmodified assembly. No claim of correctness improvement
+  is made until independent reference-based evaluation.
+- The offline `mock` policy tests orchestration **only**; it is **not an LLM**.
 
-This is only the core workflow. It does **not** yet inject failures, run CheckM2/Kraken2, call an LLM, or evaluate against a reference.
+## Install (Ubuntu/WSL2, in the existing project root)
 
-## 0. Prerequisites
-
-Linux or Ubuntu in WSL2; Conda/Miniforge installed, 4 CPU cores recommended, at least 8 GB RAM (12–16 GB preferred), and **20+ GB free disk** for the full SRA extraction and scratch files. Run the project from Linux home storage (`~/AGORA_starter`) if using WSL2.
-
-## 1. Install software
+Unzip the patch **into the project root** so `scripts/`, `tests/` and
+`workflow/` merge with existing directories. Do not replace the existing
+Snakefile.
 
 ```bash
-conda env create -f environment.yml
+cd /mnt/c/Users/nandh/Documents/ZB4171-Project
 conda activate agora-mvp
-snakemake --version
-spades.py --version
-fastp --version
-quast.py --version
+unzip -o /mnt/c/Users/nandh/Downloads/AGORA_iterative_extension.zip -d .
+# only once (append at the END of existing Snakefile)
+grep -q 'include: "workflow/agora_challenge.smk"' Snakefile || \
+  printf '\ninclude: "workflow/agora_challenge.smk"\n' >> Snakefile
+python -m unittest discover -s tests -p 'test_agora_extension.py' -v
 ```
 
-## 2. Download E. coli MG1655 Illumina reads and create a subset
+The separate `scripts/agora_*.py` names avoid overwriting existing scripts.
+The default `max_pairs=600000` yields roughly 25x nominal depth for 100bp
+paired reads; change the optional `agora_challenge.max_pairs` in `config.yaml`
+to `1000000` for ~43x if stronger assembly performance is needed. Existing
+read subsets were sampled previously, so the first 600k pairs are a bounded
+*development subset*, not an independently random sample from SRA.
 
-The source accession is **ERR008613** from NCBI SRA (paired 2x100-bp reads). Do not use the reference genome during agent decisions.
+Optionally add to existing `config.yaml` (no change needed for defaults):
+
+```yaml
+agora_challenge:
+  max_pairs: 600000
+  seed: 2026
+  genome_size_prior: 4600000
+```
+
+## A. Dry run and validate the synthetic challenge
 
 ```bash
-bash scripts/download_and_subset.sh
+snakemake -n --cores 4 results/challenges/combined/raw/profile.json
+snakemake --cores 4 results/challenges/combined/raw/profile.json
+python -m json.tool data/challenges/combined/benchmark_metadata.json
+python -m json.tool results/challenges/combined/raw/profile.json
 ```
 
-This makes `data/subset/ecoli_R1.fastq.gz` and `ecoli_R2.fastq.gz`, sampling **1,200,000 pairs** with seed 42. At 2 × 100 bp, that is around 52x nominal coverage of a 4.64-Mbp bacterial genome (actual coverage depends on trimming and data quality).
+**Never** provide `benchmark_metadata.json` to the rule-based agent or LLM.
+The model receives only `profile.json` contents and a numerical baseline plus history of
+previous attempts. It never receives the scenario name, path, reference FASTA,
+QUAST-with-reference results, or a pre-written ideal answer.
 
-**Note:** The download converts a large SRA accession to uncompressed FASTQ and needs ample scratch space. Raw files are retained to support future experiments. If the download is already present, comment out the `fasterq-dump` line and rerun only the sampling commands.
-
-## 3. Build the workflow
-
-Dry-run first:
+## B. Conventional baseline (fastp defaults) vs corrupted raw
 
 ```bash
-snakemake -n --cores 4
+snakemake --cores 4 results/challenges/combined/fastp_default/profile.json
 ```
 
-Then run:
+The original input reads had already been fastp-cleaned before synthetic
+corruption was applied. This controlled experiment therefore compares
+no *additional* preprocessing vs conventional fastp on that corrupted input.
+The standard fastp pipeline is a genuine comparator and must not be disabled
+in reported experiments.
+
+## C. Offline end-to-end iterative controller (no API charge)
 
 ```bash
-snakemake --cores 4 --printshellcmds
+python scripts/agora_controller.py --scenario combined --backend mock \
+    --mode iterative --max-steps 2 --cores 4 --dry-plan
+python scripts/agora_controller.py --scenario combined --backend mock \
+    --mode iterative --max-steps 2 --cores 4
 ```
 
-Expected outputs:
+The mock backend deliberately makes predetermined proposals; it demonstrates
+that the controller reruns and evaluates allowed actions, **not** that AI
+reasoning works.
 
-```text
-results/raw/spades/contigs.fasta
-results/raw/quast/report.tsv
-results/trimmed/fastp/fastp.json
-results/trimmed/fastp/fastp.html
-results/trimmed/spades/contigs.fasta
-results/trimmed/quast/report.tsv
-results/summary.json
-```
-
-To inspect:
+## D. Rule baseline, zero-shot and iterative LLM
 
 ```bash
-cat results/summary.json
-python -m json.tool results/summary.json
+python scripts/agora_controller.py --scenario combined --backend rule \
+  --mode iterative --max-steps 2 --cores 4
+python scripts/agora_controller.py --scenario combined --backend rule \
+  --mode zero --cores 4
 ```
 
-## 4. Completion criterion
+For live LLM (API charges):
 
-- Both raw and trimmed assemblies finish successfully.
-- QUAST produces contig count, total assembled length, N50, largest contig, and GC%.
-- `results/summary.json` has a `raw`, a `trimmed`, and a `fastp` section.
-- No reference genome was used to produce or select these outputs.
+```bash
+python -m pip install 'openai>=2' 'pydantic>=2'
+read -rsp 'OpenAI API key: ' OPENAI_API_KEY; echo
+export OPENAI_API_KEY
+python scripts/agora_controller.py --scenario combined --backend llm \
+  --mode zero --cores 4 --model gpt-5-mini
+python scripts/agora_controller.py --scenario combined --backend llm \
+  --mode iterative --max-steps 2 --cores 4 --model gpt-5-mini
+```
 
-## Important design notes for later milestones
+Outputs: `results/agent_runs/combined/{rule,llm,mock}_{zero,iterative}.json`.
+Every trial produces separate `results/challenges/<scenario>/<action>/...` files.
+Two runs can reuse already completed Snakemake jobs. Do not run Snakemake
+concurrently against the same output tree. No model response runs shell code.
 
-- **No reference leakage:** Reference-based QUAST belongs to an evaluation script after an agent run is finished. The agent and controller's best-run selection use reference-free diagnostics only.
-- **Low coverage is not repairable by parameter choice:** You cannot recover missing sequencing information. Judge this as diagnosis + avoiding harmful changes; consider a scenario-specific ceiling, not necessarily the full-depth clean assembly.
-- **SPAdes already performs read error correction by default.** `--only-assembler` turns that stage off; do not call “turning correction on” a novel fix when it is already the default.
-- **Contamination removal needs a method:** A later milestone can add Kraken2 with a taxonomy database and documented target-taxon assumptions. The absence of a *sample reference genome* is not the absence of all external biological databases.
-- **Reproducibility:** Fix injection seeds, record accession checksums, pin environment versions and keep the injection labels outside the agent-visible JSON.
+A policy may stop or select the original `raw` assembly, and iterative trials
+may fail to improve the reference-free QC. These are valid results.
 
-## Resources
+## E. Independent REFERENCE evaluation (after policy decisions)
 
-- Snakemake installation: https://snakemake.readthedocs.io/en/stable/getting_started/installation.html
-- SPAdes command line: https://ablab.github.io/spades/running.html
-- fastp: https://github.com/OpenGene/fastp
-- NCBI SRA accession: https://www.ncbi.nlm.nih.gov/sra/ERR008613
-- QUAST: https://quast.sourceforge.net/
+Before running, make sure the reference FASTA from your prior work exists.
+Build a clean comparison once:
+
+```bash
+snakemake --cores 4 results/challenges/clean/raw/profile.json
+python scripts/agora_evaluate.py --scenario combined \
+  --reference data/reference/NC_000913.3.fasta --cores 4
+cat results/evaluation/challenges/combined/report.tsv
+python -m json.tool results/evaluation/challenges/combined/comparison.json
+```
+
+**Run this only after all decisions have been written.** Reference metrics
+are not imported into the policy or controller. `evaluation_status` remains
+`reference_free_only` in agent runs.
+
+## F. Controlled comparison
+
+Create datasets for the other failure classes, and repeat the comparisons:
+
+```bash
+snakemake --cores 4 results/challenges/adapter/raw/profile.json \
+  results/challenges/quality/raw/profile.json
+python scripts/agora_controller.py --scenario adapter --backend rule --mode iterative
+python scripts/agora_controller.py --scenario quality --backend rule --mode iterative
+```
+
+Freeze rule thresholds and action menus before held-out testing; vary injection
+seeds and severity only on a new experiment version or separately named run
+folder. These scenarios at one seed are development experiments, **not** proof
+that iterative LLM decisions are better. Fair final comparisons require
+held-out seeds, replicated runs and the same budgets and inputs.
+
+## Interpretation and caveats
+
+- Clean control should favor restraint. Default fastp can already handle
+  adapters; improvements are not guaranteed. If it wins, report that.
+- This patch models adapter tails and erroneous low-quality bases, NOT species
+  contamination, experiment batch effects or RNA-seq GTF configuration.
+- Q30 of surviving reads can increase simply because reads were discarded.
+- The heuristic controller uses a 2% assembly-length loss guard, 10% N50 loss
+  guard, and 10% contig-count increase guard; it may make incorrect choices.
+  Reference-based QUAST is the independent arbiter.
+- To test different seeds without mixing Snakemake cached results, work in a
+  separate project copy or change the output directory naming and re-run;
+  do not quietly overwrite earlier results.
+- Running from WSL2's `/mnt/c/` is often slower than the Linux filesystem.

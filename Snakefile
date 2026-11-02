@@ -126,3 +126,5 @@ include: "workflow/lowcov.smk"
 include: "workflow/lowcov_repair.smk"
 
 include: "workflow/agent_profiles.smk"
+
+include: "workflow/agora_challenge.smk"
